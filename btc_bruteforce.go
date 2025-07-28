@@ -131,30 +131,36 @@ func serializeMasterKey(version []byte, depth byte, parentFingerprint []byte, ch
 func generateKeys(workerID int) {
     defer wg.Done()
 
+    // Pre-allocate reusable buffers outside the loop
+    seed := make([]byte, 16)
+    hmac512 := hmac.New(sha512.New, []byte("Bitcoin seed"))
+
     for {
-        // Generate a random seed (16 bytes for POC; not BIP32 standard)
-        seed := make([]byte, 16)
+        // Reuse the existing seed slice instead of allocating new one
         _, err := rand.Read(seed)
         if err != nil {
             log.Fatal("Failed to generate seed:", err)
         }
 
-        // Derive master key using HMAC-SHA512 ("Bitcoin seed" as key)
-        hmac512 := hmac.New(sha512.New, []byte("Bitcoin seed"))
+        // Reset and reuse the HMAC instead of creating new one each time
+        hmac512.Reset()
         hmac512.Write(seed)
         derived := hmac512.Sum(nil)
 
         masterPrivateKey := derived[:32]
         privKey, _ := btcec.PrivKeyFromBytes(masterPrivateKey)
         pubKey := privKey.PubKey()
+        
+        // Cache the compressed public key to avoid calling SerializeCompressed twice
+        compressedPubKey := pubKey.SerializeCompressed()
 
         // Generate legacy and SegWit addresses
-        legacyAddress, err := publicKeyToAddress(pubKey.SerializeCompressed(), &chaincfg.MainNetParams, false)
+        legacyAddress, err := publicKeyToAddress(compressedPubKey, &chaincfg.MainNetParams, false)
         if err != nil {
             log.Fatal("Failed to generate legacy Bitcoin address:", err)
         }
 
-        segwitAddress, err := publicKeyToAddress(pubKey.SerializeCompressed(), &chaincfg.MainNetParams, true)
+        segwitAddress, err := publicKeyToAddress(compressedPubKey, &chaincfg.MainNetParams, true)
         if err != nil {
             log.Fatal("Failed to generate SegWit Bitcoin address:", err)
         }
@@ -168,13 +174,14 @@ func generateKeys(workerID int) {
             }
         }
 
-        // Progress reporting every 10 million keys
-        mutex.Lock()
-        counter++
-        if counter%10000000 == 0 {
-            fmt.Printf("Total keys generated: %d\n", counter)
+        // Only acquire mutex every 10M keys instead of every key
+        localCounter++
+        if localCounter%10000000 == 0 {
+            mutex.Lock()
+            counter += 10000000
+            fmt.Printf("Total keys generated: %d (Worker %d just contributed 10M)\n", counter, workerID)
+            mutex.Unlock()
         }
-        mutex.Unlock()
     }
 }
 
