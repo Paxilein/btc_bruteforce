@@ -36,7 +36,14 @@ var (
     addressMap  map[string]struct{}   // Exact address set for confirmation
     wg          sync.WaitGroup        // WaitGroup for goroutine synchronization
     mutex       sync.Mutex            // Mutex for shared state (counter, file writes)
-    counter     int                   // Total keys generated (for progress reporting)
+    counter     int64                 // Total keys generated (using int64 for larger counts)
+    
+    // Pre-allocate constant BIP32 values to avoid repeated allocations
+    xprvVersion     = []byte{0x04, 0x88, 0xAD, 0xE4}
+    masterDepth     = byte(0x00)
+    zeroFingerprint = []byte{0x00, 0x00, 0x00, 0x00}
+    zeroChildNumber = []byte{0x00, 0x00, 0x00, 0x00}
+    keyPrefix       = []byte{0x00} // For BIP32 private key serialization
 )
 
 // loadAddresses loads BTC addresses from a file into a Bloom filter and a map.
@@ -89,8 +96,9 @@ func loadAddresses(filePath string) (*bloom.BloomFilter, map[string]struct{}) {
 // publicKeyToAddress generates a Bitcoin address from a compressed public key.
 // Supports both legacy (P2PKH) and SegWit (P2WPKH) formats.
 func publicKeyToAddress(pubKey []byte, netParams *chaincfg.Params, isSegWit bool) (string, error) {
+    pubKeyHash := btcutil.Hash160(pubKey)
+    
     if isSegWit {
-        pubKeyHash := btcutil.Hash160(pubKey)
         address, err := btcutil.NewAddressWitnessPubKeyHash(pubKeyHash, netParams)
         if err != nil {
             return "", err
@@ -98,18 +106,15 @@ func publicKeyToAddress(pubKey []byte, netParams *chaincfg.Params, isSegWit bool
         return address.EncodeAddress(), nil
     }
 
-    pubKeyHash := btcutil.Hash160(pubKey)
     address, err := btcutil.NewAddressPubKeyHash(pubKeyHash, netParams)
     if err != nil {
         return "", err
     }
-
     return address.EncodeAddress(), nil
 }
 
 // serializeMasterKey serializes a BIP32 master key (xprv) according to the spec.
 // Fields: version, depth, parent fingerprint, child number, chain code, key data, checksum.
-// ...existing code...
 func serializeMasterKey(version []byte, depth byte, parentFingerprint []byte, childNumber []byte, chainCode []byte, key []byte) string {
     // Pre-allocate the slice with known capacity to avoid reallocations
     data := make([]byte, 0, 4+1+4+4+32+33+4) // version + depth + fingerprint + child + chaincode + key + checksum
@@ -125,21 +130,27 @@ func serializeMasterKey(version []byte, depth byte, parentFingerprint []byte, ch
     data = append(data, checksum[:4]...)
     return base58.Encode(data)
 }
-// ...existing code...
+
 // generateKeys runs in a goroutine, generating random master keys and checking derived addresses.
 // If a generated address matches the known set, it saves the xprv and addresses to a file.
 func generateKeys(workerID int) {
     defer wg.Done()
 
-    // Pre-allocate reusable buffers outside the loop
+    // Pre-allocate reusable buffers outside the loop to minimize allocations
     seed := make([]byte, 16)
     hmac512 := hmac.New(sha512.New, []byte("Bitcoin seed"))
+    var localCounter int64 // Use int64 to avoid overflow on long runs
+    
+    // Pre-allocate byte slices for address string conversion to avoid repeated allocations
+    legacyAddrBytes := make([]byte, 0, 34)   // Typical P2PKH address length
+    segwitAddrBytes := make([]byte, 0, 42)   // Typical P2WPKH address length
 
     for {
-        // Reuse the existing seed slice instead of allocating new one
+        // Generate random seed - reuse existing slice
         _, err := rand.Read(seed)
         if err != nil {
-            log.Fatal("Failed to generate seed:", err)
+            log.Printf("Worker %d: Failed to generate seed: %v", workerID, err)
+            continue
         }
 
         // Reset and reuse the HMAC instead of creating new one each time
@@ -148,33 +159,48 @@ func generateKeys(workerID int) {
         derived := hmac512.Sum(nil)
 
         masterPrivateKey := derived[:32]
-        privKey, _ := btcec.PrivKeyFromBytes(masterPrivateKey)
-        pubKey := privKey.PubKey()
+        privKey, err := btcec.PrivKeyFromBytes(masterPrivateKey)
+        if err != nil {
+            log.Printf("Worker %d: Invalid private key: %v", workerID, err)
+            continue
+        }
         
+        pubKey := privKey.PubKey()
         // Cache the compressed public key to avoid calling SerializeCompressed twice
         compressedPubKey := pubKey.SerializeCompressed()
 
         // Generate legacy and SegWit addresses
         legacyAddress, err := publicKeyToAddress(compressedPubKey, &chaincfg.MainNetParams, false)
         if err != nil {
-            log.Fatal("Failed to generate legacy Bitcoin address:", err)
+            log.Printf("Worker %d: Failed to generate legacy address: %v", workerID, err)
+            continue
         }
 
         segwitAddress, err := publicKeyToAddress(compressedPubKey, &chaincfg.MainNetParams, true)
         if err != nil {
-            log.Fatal("Failed to generate SegWit Bitcoin address:", err)
+            log.Printf("Worker %d: Failed to generate SegWit address: %v", workerID, err)
+            continue
         }
 
-        // Fast Bloom filter check, then exact match
-        if bloomFilter.Test([]byte(legacyAddress)) || bloomFilter.Test([]byte(segwitAddress)) {
+        // Convert to bytes once for Bloom filter tests (avoiding repeated string->byte conversions)
+        legacyAddrBytes = legacyAddrBytes[:0]
+        legacyAddrBytes = append(legacyAddrBytes, legacyAddress...)
+        
+        segwitAddrBytes = segwitAddrBytes[:0]
+        segwitAddrBytes = append(segwitAddrBytes, segwitAddress...)
+
+        // Fast Bloom filter check first, then exact match
+        if bloomFilter.Test(legacyAddrBytes) || bloomFilter.Test(segwitAddrBytes) {
             if _, exists := addressMap[legacyAddress]; exists {
+                fmt.Printf("Worker %d: HOLY GRAIL FOUND! Legacy match: %s\n", workerID, legacyAddress)
                 saveAddressData(legacyAddress, segwitAddress, derived)
             } else if _, exists := addressMap[segwitAddress]; exists {
+                fmt.Printf("Worker %d: HOLY GRAIL FOUND! SegWit match: %s\n", workerID, segwitAddress)
                 saveAddressData(legacyAddress, segwitAddress, derived)
             }
         }
 
-        // Only acquire mutex every 10M keys instead of every key
+        // Only acquire mutex every 10M keys instead of every key to reduce contention
         localCounter++
         if localCounter%10000000 == 0 {
             mutex.Lock()
@@ -186,42 +212,55 @@ func generateKeys(workerID int) {
 }
 
 // saveAddressData serializes the master key as xprv and saves matching addresses to a file.
-// Uses BIP32 fields for serialization.
+// Uses BIP32 fields for serialization with pre-allocated constants.
 func saveAddressData(legacyAddress, segwitAddress string, derived []byte) {
     chainCode := derived[32:]
-    version := []byte{0x04, 0x88, 0xAD, 0xE4} // Mainnet xprv version
-    keyData := append([]byte{0x00}, derived[:32]...) // 0x00 + private key
+    // Pre-allocate keyData slice to avoid allocation in append
+    keyData := make([]byte, 33)
+    keyData[0] = 0x00
+    copy(keyData[1:], derived[:32])
 
-    depth := byte(0x00)
-    parentFingerprint := []byte{0x00, 0x00, 0x00, 0x00}
-    childNumber := []byte{0x00, 0x00, 0x00, 0x00}
+    xprv := serializeMasterKey(xprvVersion, masterDepth, zeroFingerprint, zeroChildNumber, chainCode, keyData)
 
-    xprv := serializeMasterKey(version, depth, parentFingerprint, childNumber, chainCode, keyData)
-
-    // Log and save results
-    fmt.Printf("Matching address found!!\n")
+    // Log the miraculous discovery
+    fmt.Printf("==============================================\n")
+    fmt.Printf("🎉 IMPOSSIBLE HAPPENED! MATCHING ADDRESS FOUND! 🎉\n")
     fmt.Printf("Legacy Address: %s\n", legacyAddress)
     fmt.Printf("SegWit Address: %s\n", segwitAddress)
     fmt.Printf("xprv: %s\n", xprv)
+    fmt.Printf("==============================================\n")
 
     mutex.Lock()
+    defer mutex.Unlock()
+    
     file, err := os.OpenFile("foundkey.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
     if err != nil {
-        log.Fatalf("Failed to open file: %v", err)
+        log.Printf("Failed to open result file: %v", err)
+        return
     }
-    _, err = file.WriteString(fmt.Sprintf("Legacy Address: %s\nSegWit Address: %s\nxprv: %s\n", legacyAddress, segwitAddress, xprv))
+    defer file.Close()
+    
+    _, err = file.WriteString(fmt.Sprintf("=== MIRACLE OCCURRENCE ===\nLegacy Address: %s\nSegWit Address: %s\nxprv: %s\n\n", legacyAddress, segwitAddress, xprv))
     if err != nil {
-        log.Fatalf("Failed to write to file: %v", err)
+        log.Printf("Failed to write result: %v", err)
     }
-    file.Close()
-    mutex.Unlock()
 }
 
 // main initializes the Bloom filter and address map, then starts key generation workers.
 // Waits for all workers to finish (which, in this infinite loop, never happens).
 func main() {
+    fmt.Println("🚀 Bitcoin Private Key Brute Force POC")
+    fmt.Println("=====================================")
+    fmt.Printf("Workers: %d\n", numWorkers)
+    fmt.Printf("Target addresses file: %s\n", addressesFile)
+    fmt.Println("WARNING: This demonstrates the mathematical impossibility of brute-forcing Bitcoin.")
+    fmt.Printf("Even at 10M keys/second, you'd need ~10^59 years to have a decent chance.\n")
+    fmt.Printf("The universe is only ~10^10 years old. You do the math.\n\n")
+
     bloomFilter, addressMap = loadAddresses(addressesFile)
-    ch := make(chan struct{})
+    
+    fmt.Printf("Starting %d optimized workers...\n", numWorkers)
+    fmt.Println("Press Ctrl+C to stop this exercise in futility.\n")
 
     for i := 0; i < numWorkers; i++ {
         wg.Add(1)
