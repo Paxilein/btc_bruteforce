@@ -109,22 +109,26 @@ func publicKeyToAddress(pubKey []byte, netParams *chaincfg.Params, isSegWit bool
 
 // serializeMasterKey serializes a BIP32 master key (xprv) according to the spec.
 // Fields: version, depth, parent fingerprint, child number, chain code, key data, checksum.
+// ...existing code...
 func serializeMasterKey(version []byte, depth byte, parentFingerprint []byte, childNumber []byte, chainCode []byte, key []byte) string {
-    data := append([]byte{}, version...)
+    // Pre-allocate the slice with known capacity to avoid reallocations
+    data := make([]byte, 0, 4+1+4+4+32+33+4) // version + depth + fingerprint + child + chaincode + key + checksum
+    data = append(data, version...)
     data = append(data, depth)
     data = append(data, parentFingerprint...)
     data = append(data, childNumber...)
     data = append(data, chainCode...)
-    data = append(data, key...) // Key data: 0x00 + private key
+    data = append(data, key...)
+    
     checksum := sha256.Sum256(data)
     checksum = sha256.Sum256(checksum[:])
-	data = append(data, checksum[:4]...)
+    data = append(data, checksum[:4]...)
     return base58.Encode(data)
 }
-
+// ...existing code...
 // generateKeys runs in a goroutine, generating random master keys and checking derived addresses.
 // If a generated address matches the known set, it saves the xprv and addresses to a file.
-func generateKeys(workerID int, ch chan struct{}) {
+func generateKeys(workerID int) {
     defer wg.Done()
 
     for {
@@ -214,7 +218,7 @@ func main() {
 
     for i := 0; i < numWorkers; i++ {
         wg.Add(1)
-        go generateKeys(i, ch)
+        go generateKeys(i)
     }
 
     wg.Wait()
