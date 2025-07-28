@@ -26,3 +26,4 @@ go.work.sum
 
 # Addresses
 addresses.txt
+address-hashes.bin
