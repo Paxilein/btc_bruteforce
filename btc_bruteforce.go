@@ -34,7 +34,7 @@ const (
 	numWorkers          = 32                   // Match Ryzen 9 7950X3D's 32 threads for maximum utilization
 	errorRate           = 0.000000001          // Bloom filter false positive rate
 	addressesFile       = "addresses.txt"      // File containing known BTC addresses (one per line)
-	hashesFile          = "address-hashes.txt" // File containing Hash160 values (20 bytes each)
+	hashesFile          = "address-hashes.bin" // File containing Hash160 values (20 bytes each)
 	batchSize           = 400000               // Optimized for 7950X3D's dual-CCD architecture with 3D V-Cache
 	useHashOptimization = false                // Set to true to use Hash160 optimization (P2PKH/P2WPKH only), false for full address support (includes P2TR)
 )

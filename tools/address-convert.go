@@ -1,7 +1,6 @@
 // address-convert.go converts Bitcoin addresses to Hash160 values for faster brute force comparison.
 // This preprocesses the addresses.txt file to create address-hashes.txt with raw Hash160 values.
-// Input: ../add	fmt.Println("\n📊 Address Type Breakdown:")
-// Output: ../address-hashes.txt (20-byte Hash160 values, binary format)
+// Output: ../address-hashes.bin (20-byte Hash160 values, binary format)
 
 package main
 
@@ -10,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +21,24 @@ const (
 	inputFile  = "../addresses.txt"
 	outputFile = "../address-hashes.bin"
 )
+
+// formatNumber adds comma separators to numbers for better readability
+func formatNumber(n int64) string {
+	str := strconv.FormatInt(n, 10)
+	if len(str) <= 3 {
+		return str
+	}
+
+	// Add commas from right to left
+	result := ""
+	for i, digit := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result += ","
+		}
+		result += string(digit)
+	}
+	return result
+}
 
 // addressToHash160 converts a Bitcoin address to its Hash160 value
 func addressToHash160(address string) ([]byte, error) {
@@ -100,7 +118,7 @@ func main() {
 
 	scanner := bufio.NewScanner(inFile)
 	var processedCount int64
-	var errorCount int64
+	var conversionErrorCount int64 // Only actual conversion failures
 	var duplicateCount int64
 	var malformedCount int64 // Invalid/corrupted addresses
 	var p2pkhCount int64     // Legacy addresses (1...)
@@ -146,8 +164,7 @@ func main() {
 
 		// Skip non-brute-forceable addresses
 		if !isBruteForceableAddr {
-			errorCount++
-			continue
+			continue // Don't count as error, just skip
 		}
 
 		// Convert address to Hash160 (only for brute-forceable addresses)
@@ -163,7 +180,7 @@ func main() {
 			} else {
 				log.Printf("Error processing address %s: %v", address, err)
 			}
-			errorCount++
+			conversionErrorCount++
 			continue
 		} // Check for duplicates
 		hashStr := string(hash160)
@@ -198,36 +215,39 @@ func main() {
 
 	fmt.Println("\n✅ Conversion Complete!")
 	fmt.Println("========================")
-	totalInput := processedCount + errorCount
+	totalBruteForceableAddresses := processedCount + conversionErrorCount
 	skippedNonBruteForce := p2shCount + p2wshCount
-	fmt.Printf("Total addresses read: %d\n", totalInput+skippedNonBruteForce)
-	fmt.Printf("Brute-forceable addresses: %d\n", totalInput)
-	fmt.Printf("Successfully converted: %d\n", processedCount)
-	fmt.Printf("Skipped (non-brute-forceable): %d\n", skippedNonBruteForce)
-	fmt.Printf("Errors encountered: %d\n", errorCount)
+	totalAddressesRead := totalBruteForceableAddresses + skippedNonBruteForce
+
+	fmt.Printf("Total addresses read: %s\n", formatNumber(totalAddressesRead))
+	fmt.Printf("Brute-forceable addresses: %s\n", formatNumber(totalBruteForceableAddresses))
+	fmt.Printf("Successfully converted: %s\n", formatNumber(processedCount))
+	fmt.Printf("Skipped (non-brute-forceable): %s\n", formatNumber(skippedNonBruteForce))
+	fmt.Printf("Conversion errors: %s\n", formatNumber(conversionErrorCount))
 	if malformedCount > 0 {
-		fmt.Printf("  - Malformed/corrupted: %d\n", malformedCount)
-		fmt.Printf("  - Other errors: %d\n", errorCount-malformedCount)
+		fmt.Printf("  - Malformed/corrupted: %s\n", formatNumber(malformedCount))
+		fmt.Printf("  - Other errors: %s\n", formatNumber(conversionErrorCount-malformedCount))
 	}
-	fmt.Printf("Duplicates skipped: %d\n", duplicateCount)
-	fmt.Printf("Unique Hash160 values: %d\n", processedCount)
+	fmt.Printf("Duplicates skipped: %s\n", formatNumber(duplicateCount))
+	fmt.Printf("Unique Hash160 values: %s\n", formatNumber(processedCount))
 	fmt.Printf("Processing time: %v\n", elapsed)
-	fmt.Printf("Average rate: %.0f addresses/sec\n", float64(totalInput)/elapsed.Seconds())
-	fmt.Printf("Output file size: %d bytes (%.2f MB)\n",
-		processedCount*20, float64(processedCount*20)/(1024*1024))
+	fmt.Printf("Average rate: %s addresses/sec\n", formatNumber(int64(float64(totalBruteForceableAddresses)/elapsed.Seconds())))
+	fmt.Printf("Output file size: %s bytes (%.2f MB)\n",
+		formatNumber(processedCount*20), float64(processedCount*20)/(1024*1024))
 
-	fmt.Println("\n� Address Type Breakdown:")
-	fmt.Printf("- P2PKH (1...):           %d (%.1f%%)\n", p2pkhCount, float64(p2pkhCount)/float64(processedCount+errorCount)*100)
-	fmt.Printf("- P2WPKH (bc1q... 42ch):  %d (%.1f%%)\n", p2wpkhCount, float64(p2wpkhCount)/float64(processedCount+errorCount)*100)
-	fmt.Printf("- P2SH (3...):            %d (%.1f%%)\n", p2shCount, float64(p2shCount)/float64(processedCount+errorCount)*100)
-	fmt.Printf("- P2WSH (bc1q... 62ch):   %d (%.1f%%)\n", p2wshCount, float64(p2wshCount)/float64(processedCount+errorCount)*100)
-	fmt.Printf("- P2TR (bc1p...):         %d (%.1f%%)\n", p2trCount, float64(p2trCount)/float64(processedCount+errorCount)*100)
+	fmt.Println("\n📊 Address Type Breakdown:")
+	fmt.Printf("- P2PKH (1...):           %s (%.1f%%)\n", formatNumber(p2pkhCount), float64(p2pkhCount)/float64(totalAddressesRead)*100)
+	fmt.Printf("- P2WPKH (bc1q... 42ch):  %s (%.1f%%)\n", formatNumber(p2wpkhCount), float64(p2wpkhCount)/float64(totalAddressesRead)*100)
+	fmt.Printf("- P2SH (3...):            %s (%.1f%%)\n", formatNumber(p2shCount), float64(p2shCount)/float64(totalAddressesRead)*100)
+	fmt.Printf("- P2WSH (bc1q... 62ch):   %s (%.1f%%)\n", formatNumber(p2wshCount), float64(p2wshCount)/float64(totalAddressesRead)*100)
+	fmt.Printf("- P2TR (bc1p...):         %s (%.1f%%)\n", formatNumber(p2trCount), float64(p2trCount)/float64(totalAddressesRead)*100)
 
-	fmt.Println("\n�💡 Usage Notes:")
-	fmt.Printf("- Original file: %d addresses (~%.1f MB text)\n",
-		processedCount+errorCount, float64(processedCount+errorCount*34)/(1024*1024))
-	fmt.Printf("- Hash160 file: %d hashes (%.2f MB binary)\n",
-		processedCount, float64(processedCount*20)/(1024*1024))
+	fmt.Println("\n💡 Usage Notes:")
+	fmt.Printf("- Original file: %s addresses (~%.1f MB text)\n",
+		formatNumber(totalBruteForceableAddresses), float64(totalBruteForceableAddresses*34)/(1024*1024))
+	fmt.Printf("- Hash160 file: %s hashes (%.2f MB binary)\n",
+		formatNumber(processedCount), float64(processedCount*20)/(1024*1024))
+
 	fmt.Printf("- Space savings: %.1f%% smaller\n",
 		(1.0-float64(processedCount*20)/float64(processedCount*34))*100)
 	fmt.Println("- Ready for brute force optimization! 🚀")
