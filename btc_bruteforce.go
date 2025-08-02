@@ -55,7 +55,8 @@ var (
 	// Memory pools to reduce garbage collection pressure
 	seedPool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 16)
+			seed := make([]byte, 16)
+			return &seed
 		},
 	}
 
@@ -211,12 +212,9 @@ func generateKeys(workerID int, useHash160 bool) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
 
 	// Use memory pools to reduce allocations
-	seed := seedPool.Get().([]byte)
-	defer func() {
-		// Create a new slice to avoid the warning
-		newSeed := make([]byte, 16)
-		seedPool.Put(newSeed)
-	}()
+	seedPtr := seedPool.Get().(*[]byte)
+	seed := *seedPtr
+	defer seedPool.Put(seedPtr)
 
 	hmac512 := hmacPool.Get().(hash.Hash)
 	defer hmacPool.Put(hmac512)
