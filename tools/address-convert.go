@@ -1,6 +1,5 @@
 // address-convert.go converts Bitcoin addresses to Hash160 values for faster brute force comparison.
 // This preprocesses the addresses.txt file to create address-hashes.txt with raw Hash160 values.
-// Output: ../address-hashes.bin (20-byte Hash160 values, binary format)
 
 package main
 
@@ -244,7 +243,7 @@ func main() {
 
 	fmt.Println("\n💡 Usage Notes:")
 	fmt.Printf("- Original file: %s addresses (~%.1f MB text)\n",
-		formatNumber(totalBruteForceableAddresses), float64(totalBruteForceableAddresses*34)/(1024*1024))
+		formatNumber(totalAddressesRead), float64(totalAddressesRead*34)/(1024*1024))
 	fmt.Printf("- Hash160 file: %s hashes (%.2f MB binary)\n",
 		formatNumber(processedCount), float64(processedCount*20)/(1024*1024))
 

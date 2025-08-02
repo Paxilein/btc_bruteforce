@@ -301,7 +301,7 @@ func generateKeys(workerID int, useHash160 bool) {
 		if localCounter%batchSize == 0 {
 			mutex.Lock()
 			counter += batchSize
-			fmt.Printf("Total keys generated: %d (Worker %d just contributed %dM)\n", counter, workerID, batchSize/1000000)
+			fmt.Printf("Total keys generated: %d (Worker %d just contributed %dk)\n", counter, workerID, batchSize/1000)
 			mutex.Unlock()
 		}
 	}
@@ -348,12 +348,20 @@ func main() {
 	var inputFile string
 	var useHash160 bool
 
-	// Handle command line arguments with defaults
+	// Handle command line arguments with intelligent defaults
 	if len(os.Args) == 1 {
-		// No arguments - use default files
-		inputFile = addressesFile
-		useHash160 = false
-		fmt.Println("Using default files: addresses.txt (full address mode)")
+		// No arguments - check if binary hash file exists
+		if _, err := os.Stat(hashesFile); err == nil {
+			// Binary hash file exists - use hash160 optimization
+			inputFile = hashesFile
+			useHash160 = true
+			fmt.Printf("Auto-detected %s - using Hash160 optimization mode\n", hashesFile)
+		} else {
+			// Fall back to text file
+			inputFile = addressesFile
+			useHash160 = false
+			fmt.Printf("Using default: %s (full address mode)\n", addressesFile)
+		}
 	} else if len(os.Args) == 2 {
 		// One argument - input file specified
 		inputFile = os.Args[1]
@@ -366,11 +374,11 @@ func main() {
 		// Invalid arguments - show usage
 		fmt.Println("Usage: btc_bruteforce [addresses.txt] [options]")
 		fmt.Println("  addresses.txt  - File containing Bitcoin addresses (one per line)")
-		fmt.Println("                   Default: addresses.txt")
+		fmt.Println("                   Default: Auto-detects address-hashes.bin or addresses.txt")
 		fmt.Println("  -hash160       - Use Hash160 optimization (P2PKH/P2WPKH only)")
 		fmt.Println("")
 		fmt.Println("Examples:")
-		fmt.Println("  btc_bruteforce                    # Uses addresses.txt, full mode")
+		fmt.Println("  btc_bruteforce                    # Auto-detects best file and mode")
 		fmt.Println("  btc_bruteforce addresses.txt      # Full address mode")
 		fmt.Println("  btc_bruteforce test-taproot.txt   # Full address mode with custom file")
 		fmt.Println("  btc_bruteforce addresses.txt -hash160  # Hash160 optimization mode")
